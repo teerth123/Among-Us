@@ -7,8 +7,8 @@ function App() {
 
   return (
     <>
-      <Game/>
-      {/* <Google/> */}
+      {/* <Game/> */}
+      <Google/>
     </>
   )
 }

@@ -53,6 +53,8 @@ export default function MergedGame() {
   const [error, setError] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [pollingData, setPollingData] = useState<Record<string, number>>({});
+  const [isPollingActive, setIsPollingActive] = useState(false);
+  const [hasVoted, setHasVoted] = useState(false);
   
   // Player state
   const [myPlayer, setMyPlayer] = useState<Player | null>(null);
@@ -99,11 +101,26 @@ export default function MergedGame() {
     });
 
     newSocket.on('player-killed', (data: { killer: string; victim: string }) => {
-      setMessages(prev => [...prev, `${data.victim} was killed by ${data.killer}!`]);
+      setMessages(prev => [...prev, `${data.victim} was killed `]);
+    });
+
+    newSocket.on("player-eliminated", (eliminatedPlayer: string) => {
+      setMessages(prev => [...prev, `${eliminatedPlayer} got eliminated`]);
+      setIsPollingActive(false);
+      setHasVoted(false);
+      setPollingData({});
     });
 
     newSocket.on('polling-update', (pollData: Record<string, number>) => {
       setPollingData(pollData);
+      setIsPollingActive(true);
+    });
+
+    newSocket.on("endGame", (gameConclusion: string) => {
+      setMessages(prev => [...prev, gameConclusion]);
+      setIsPollingActive(false);
+      setHasVoted(false);
+      setPollingData({});
     });
 
     return () => {
@@ -133,8 +150,8 @@ export default function MergedGame() {
     if (gameState.phase === 'playing' && !gameInstance) {
       const config: Phaser.Types.Core.GameConfig = {
         type: Phaser.AUTO,
-        width: 800,
-        height: 600,
+        width: window.innerWidth,
+        height: window.innerHeight,
         parent: "game-container",
         scene: {
           preload: Preload,
@@ -164,6 +181,8 @@ export default function MergedGame() {
   // Phaser scene functions - make these global to persist across re-renders
   var player: any;
   var moves: any;
+  var qKey: any;
+  var pKey: any;
   var otherPlayers: { [key: string]: any } = {};
   var mapWidth: number, mapHeight: number;
   var currentScene: Phaser.Scene;
@@ -216,12 +235,16 @@ export default function MergedGame() {
       right: Phaser.Input.Keyboard.KeyCodes.D,
     });
 
-    // Set up camera to follow player
+    // Add Q and P key listeners
+    qKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
+    pKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.P);
+
+    // Set up camera to follow player with zoom and tight focus
     this.cameras.main.setBounds(0, 0, mapWidth, mapHeight);
     this.cameras.main.startFollow(player, true);
-    this.cameras.main.setZoom(1);
+    this.cameras.main.setZoom(2.5); // Increased zoom for closer view
     this.cameras.main.setLerp(0.1, 0.1);
-    this.cameras.main.setDeadzone(100, 100);
+    this.cameras.main.setDeadzone(0, 0); // Camera stays centered on player
 
     // Initialize player position and send to backend
     if (currentSocket && currentUsername) {
@@ -267,6 +290,16 @@ export default function MergedGame() {
       moved = true;
     }
     
+    // Handle Q key for kill (only imposters)
+    if (Phaser.Input.Keyboard.JustDown(qKey) && currentGameState?.myRole === 'imposter') {
+      handleKill();
+    }
+
+    // Handle P key for polling
+    if (Phaser.Input.Keyboard.JustDown(pKey)) {
+      handleStartPolling();
+    }
+    
     // Normalize diagonal movement
     if ((moves.up?.isDown || moves.down?.isDown) && (moves.left?.isDown || moves.right?.isDown)) {
       const normalizedSpeed = speed * 0.707;
@@ -288,7 +321,7 @@ export default function MergedGame() {
       setMyPlayer(updatedPlayer);
     }
 
-    // Update other players positions - this is the key fix!
+    // Update other players positions
     if (allPlayersData && allPlayersData.length > 0) {
       allPlayersData.forEach(playerData => {
         // Skip self
@@ -411,10 +444,24 @@ export default function MergedGame() {
     socket.emit('kill');
   };
 
+  // Start polling
+  const handleStartPolling = () => {
+    if (!socket || !isPollingActive) return;
+    setMessages(prev => [...prev, 'Polling started! Vote for who you think is the imposter.']);
+  };
+
   // Vote for player
   const handleVote = (targetUsername: string) => {
-    if (!socket) return;
+    if (!socket || hasVoted) return;
     socket.emit('polling', { username: targetUsername });
+    setHasVoted(true);
+    setMessages(prev => [...prev, `You voted for ${targetUsername}`]);
+  };
+
+  // End polling (for debugging/testing - you might want to remove this or make it host-only)
+  const handleEndPolling = () => {
+    if (!socket) return;
+    socket.emit('donePolling');
   };
 
   // Render lobby phase
@@ -536,65 +583,180 @@ export default function MergedGame() {
   // Render game phase
   if (gameState.phase === 'playing') {
     return (
-      <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-          <div style={{ display: 'flex', gap: '20px' }}>
-            <div>Role: <span style={{ 
-              color: gameState.myRole === 'imposter' ? '#ff4444' : '#44ff44',
-              fontWeight: 'bold'
-            }}>{gameState.myRole}</span></div>
-            <div>Room: {gameState.roomID}</div>
-            <div>Players: {allPlayers.filter(p => !p.dead).length} alive</div>
-          </div>
+      <div style={{ 
+        position: 'relative', 
+        width: '100vw', 
+        height: '100vh', 
+        overflow: 'hidden',
+        fontFamily: 'Arial, sans-serif'
+      }}>
+        {/* Top Left - Role and Game Info */}
+        <div style={{
+          position: 'absolute',
+          top: '10px',
+          left: '10px',
+          zIndex: 1000,
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          color: 'white',
+          padding: '10px',
+          borderRadius: '8px',
+          fontSize: '14px'
+        }}>
+          <div>Role: <span style={{ 
+            color: gameState.myRole === 'imposter' ? '#ff4444' : '#44ff44',
+            fontWeight: 'bold'
+          }}>{gameState.myRole}</span></div>
+          <div>Room: {gameState.roomID}</div>
+          <div>Players: {allPlayers.filter(p => !p.dead).length} alive</div>
+          {error && <div style={{ color: '#ff6666', fontSize: '12px', marginTop: '5px' }}>{error}</div>}
+        </div>
 
+        {/* Top Center - Kill Button (for imposters only) */}
+        {gameState.myRole === 'imposter' && (
+          <div style={{
+            position: 'absolute',
+            top: '10px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1000
+          }}>
+            <button 
+              onClick={handleKill}
+              style={{ 
+                padding: '10px 20px', 
+                backgroundColor: '#ff4444', 
+                color: 'white', 
+                border: 'none', 
+                borderRadius: '4px',
+                fontSize: '16px',
+                fontWeight: 'bold'
+              }}
+            >
+              Kill (Q)
+            </button>
+          </div>
+        )}
+
+        {/* Right Side - Messages and Voting */}
+        <div style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          width: '300px',
+          maxHeight: '80vh',
+          zIndex: 1000,
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          color: 'white',
+          padding: '15px',
+          borderRadius: '8px',
+          overflowY: 'auto'
+        }}>
+          {/* Voting Section */}
+          {isPollingActive && Object.keys(pollingData).length > 0 && (
+            <div style={{ marginBottom: '20px' }}>
+              <h3 style={{ margin: '0 0 10px 0', color: '#ffaa00' }}>🗳️ Voting Active</h3>
+              <div style={{ fontSize: '12px', marginBottom: '10px' }}>
+                Press P to start voting | Click to vote
+              </div>
+              {Object.entries(pollingData).map(([player, votes]) => (
+                <div key={player} style={{ 
+                  marginBottom: '8px', 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                  padding: '5px 8px',
+                  borderRadius: '4px'
+                }}>
+                  <span style={{ fontSize: '14px' }}>{player}: {votes} votes</span>
+                  <button 
+                    onClick={() => handleVote(player)}
+                    disabled={hasVoted}
+                    style={{ 
+                      padding: '4px 12px', 
+                      backgroundColor: hasVoted ? '#666' : '#008CBA', 
+                      color: 'white', 
+                      border: 'none', 
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      cursor: hasVoted ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {hasVoted ? 'Voted' : 'Vote'}
+                  </button>
+                </div>
+              ))}
+              {hasVoted && (
+                <div style={{ fontSize: '12px', color: '#44ff44', textAlign: 'center', marginTop: '10px' }}>
+                  ✓ You have voted! Waiting for others...
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Messages Section */}
           <div>
-            {gameState.myRole === 'imposter' && (
-              <button 
-                onClick={handleKill}
-                style={{ padding: '10px 20px', backgroundColor: '#ff4444', color: 'white', border: 'none', borderRadius: '4px' }}
-              >
-                Kill
-              </button>
-            )}
+            <h4 style={{ margin: '0 0 10px 0', color: '#44ff44' }}>📨 Game Messages</h4>
+            <div style={{ 
+              maxHeight: '300px', 
+              overflowY: 'auto',
+              backgroundColor: 'rgba(255, 255, 255, 0.1)',
+              padding: '8px',
+              borderRadius: '4px'
+            }}>
+              {messages.slice(-10).map((msg, index) => (
+                <div key={index} style={{ 
+                  marginBottom: '4px', 
+                  fontSize: '13px',
+                  padding: '2px 0',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+                }}>
+                  {msg}
+                </div>
+              ))}
+              {messages.length === 0 && (
+                <div style={{ fontSize: '12px', color: '#888', fontStyle: 'italic' }}>
+                  No messages yet...
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        <div id="game-container" style={{ width: '800px', height: '600px', margin: '0 auto', border: '2px solid #333' }}></div>
-
-        <div style={{ marginTop: '10px', textAlign: 'center' }}>
-          <p>Use WASD keys to move around the map</p>
+        {/* Bottom Center - Controls */}
+        <div style={{
+          position: 'absolute',
+          bottom: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 1000,
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          color: 'white',
+          padding: '8px 15px',
+          borderRadius: '8px',
+          fontSize: '12px',
+          textAlign: 'center'
+        }}>
+          <div>WASD: Move | Q: Kill {gameState.myRole !== 'imposter' && '(Imposters only)'} | P: Polling</div>
           {gameState.myRole === 'imposter' && (
-            <p style={{ color: '#ff4444', fontWeight: 'bold' }}>You are an IMPOSTER! Kill other players and blend in.</p>
+            <div style={{ color: '#ff4444', fontWeight: 'bold', fontSize: '11px' }}>
+              You are an IMPOSTER! Kill other players and blend in.
+            </div>
           )}
         </div>
 
-        {Object.keys(pollingData).length > 0 && (
-          <div style={{ marginTop: '20px', backgroundColor: '#f5f5f5', padding: '15px', borderRadius: '4px' }}>
-            <h3>Voting Results:</h3>
-            {Object.entries(pollingData).map(([player, votes]) => (
-              <div key={player} style={{ marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>{player}: {votes} votes</span>
-                <button 
-                  onClick={() => handleVote(player)}
-                  style={{ padding: '5px 15px', backgroundColor: '#008CBA', color: 'white', border: 'none', borderRadius: '4px' }}
-                >
-                  Vote
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {messages.length > 0 && (
-          <div style={{ marginTop: '20px', backgroundColor: '#f5f5f5', padding: '15px', borderRadius: '4px' }}>
-            <h4>Game Messages:</h4>
-            <div style={{ maxHeight: '100px', overflowY: 'auto' }}>
-              {messages.slice(-5).map((msg, index) => (
-                <div key={index} style={{ marginBottom: '5px' }}>{msg}</div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Game Container - Full Screen */}
+        <div 
+          id="game-container" 
+          style={{ 
+            width: '100vw', 
+            height: '100vh',
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            zIndex: 1
+          }}
+        ></div>
       </div>
     );
   }

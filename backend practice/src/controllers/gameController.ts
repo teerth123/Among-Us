@@ -84,7 +84,7 @@ export function joinRoom(socket: Socket, io: Server) {
             return
         }
 
-        if (room.password != password) {
+        if (room.password !== password) {
             socket.emit("error", "wrong password")
             return
         }

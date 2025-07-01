@@ -1,17 +1,27 @@
 import express from "express"
 import http from "http"
 import { Server } from "socket.io"
+import cors from "cors"
 
 import { rename, createRoom, disconnect, joinRoom } from "./controllers/gameController"
 import { startGame } from "./models/gameState"
 import { movement , kill, polling} from "./socket/index"
 
 const app = express()
+
+// Add CORS middleware for Express
+app.use(cors({
+    origin: "*",
+    credentials: true
+}))
+
 const server = http.createServer(app)
 const io = new Server(server,
     {cors:{
-        origin:"*",
-        methods:["GET", "POST", "PUT", "DELETE"]
+        origin: "*",
+        methods: ["GET", "POST", "PUT", "DELETE"],
+        credentials: true,
+        allowedHeaders: ["*"]
     }}
 )
 

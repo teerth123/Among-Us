@@ -4,7 +4,7 @@ role Assignment, started game
 
 import { Socket, Server } from "socket.io";
 import { player, rooms, playerUsernames, roles } from "../controllers/gameController";
-import { pollingArray } from "../socket/index";
+import { pollingArray, pollingTimers } from "../socket/index";
 
 export function startGame(socket: Socket, io: Server) {
     socket.on("startGame", () => {
@@ -17,18 +17,25 @@ export function startGame(socket: Socket, io: Server) {
         const roomID = currentPlayer.roomID;
         const room = rooms.get(roomID);
 
-        pollingArray.clear()
+        // Clear any leftover polling state from previous game
+        pollingArray.clear();
+        if (pollingTimers.has(roomID)) {
+            clearTimeout(pollingTimers.get(roomID)!);
+            pollingTimers.delete(roomID);
+        }
 
         if (!room) {
             socket.emit("error", "Room does not exist");
             return;
         }
 
-        const playersInRoom: player[] = [...room.players];
-        if (playersInRoom.length < 4) {
-            socket.emit("error", "Invite more friends to start the game");
-            return;
-        }
+        // Reset all players for new game (revive dead players, reset roles)
+        const playersInRoom: player[] = room.players.map(p => ({
+            ...p,
+            dead: false,
+            role: "none",
+            position: { x: Math.random() * 800 + 100, y: Math.random() * 600 + 100 } // Random spawn positions
+        }));
 
         // ----- Role Assignment -----
         const totalImposters = Math.ceil(0.2 * playersInRoom.length);
@@ -63,8 +70,8 @@ export function startGame(socket: Socket, io: Server) {
         room.players = playersInRoom
         rooms.set(roomID, room)
 
-
-
+        // Send updated player list to all clients
+        io.to(roomID).emit("update-players", room.players);
         io.to(roomID).emit("msg", "Game started!");
     });
 }

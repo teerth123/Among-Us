@@ -100,6 +100,12 @@ export default function MergedGame() {
       allPlayersData = players;
     });
 
+    newSocket.on('update-players', (players: Player[]) => {
+      console.log('Received updated player list:', players); // Debug log
+      setAllPlayers(players);
+      allPlayersData = players;
+    });
+
     newSocket.on('player-killed', (data: { killer: string; victim: string }) => {
       setMessages(prev => [...prev, `${data.victim} was killed `]);
     });
@@ -112,12 +118,22 @@ export default function MergedGame() {
     });
 
     newSocket.on('polling-update', (pollData: Record<string, number>) => {
+      console.log('Received polling update:', pollData); // Debug log
       setPollingData(pollData);
       setIsPollingActive(true);
     });
 
+    newSocket.on('polling-ended', () => {
+      console.log('Polling ended - received by all players');
+      setIsPollingActive(false);
+      setHasVoted(false);
+      setPollingData({});
+    });
+
     newSocket.on("endGame", (gameConclusion: string) => {
       setMessages(prev => [...prev, gameConclusion]);
+      // Switch to results phase instead of just adding message
+      setGameState(prev => ({ ...prev, phase: 'results' }));
       setIsPollingActive(false);
       setHasVoted(false);
       setPollingData({});
@@ -446,8 +462,14 @@ export default function MergedGame() {
 
   // Start polling
   const handleStartPolling = () => {
-    if (!socket || !isPollingActive) return;
-    setMessages(prev => [...prev, 'Polling started! Vote for who you think is the imposter.']);
+    if   (!socket) return;
+    console.log('Starting polling...');
+    // Notify server to begin polling for all players
+    socket.emit('polling', { username });
+    setIsPollingActive(true);
+    setHasVoted(false);
+    setPollingData({});
+    setMessages(prev => [...prev, '📢 Polling started! Vote now.']);
   };
 
   // Vote for player
@@ -462,6 +484,27 @@ export default function MergedGame() {
   const handleEndPolling = () => {
     if (!socket) return;
     socket.emit('donePolling');
+    setIsPollingActive(false);
+    setHasVoted(false);
+    setPollingData({});
+  };
+
+  // Start new game (host only)
+  const handleStartNewGame = () => {
+    if (!socket || !gameState.isHost) return;
+    socket.emit('startGame');
+    // Reset frontend state for new game
+    setMessages([]);
+    setGameState(prev => ({ ...prev, phase: 'waiting' }));
+    setIsPollingActive(false);
+    setHasVoted(false);
+    setPollingData({});
+    
+    // Destroy current game instance to restart fresh
+    if (gameInstance) {
+      gameInstance.destroy(true);
+      gameInstance = null;
+    }
   };
 
   // Render lobby phase
@@ -590,6 +633,41 @@ export default function MergedGame() {
         overflow: 'hidden',
         fontFamily: 'Arial, sans-serif'
       }}>
+        {/* VOTING BUTTON - ALWAYS VISIBLE AT TOP CENTER */}
+        <div style={{
+          position: 'absolute',
+          top: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 9999,
+          display: 'flex',
+          gap: '10px'
+        }}>
+          <button 
+            onClick={handleStartPolling}
+            style={{ 
+              background: 'orange', 
+              padding: '15px 30px', 
+              border: 'none', 
+              borderRadius: '5px', 
+              color: 'white', 
+              cursor: 'pointer', 
+              fontSize: '16px', 
+              fontWeight: 'bold'
+            }}
+          >
+            🗳️ START VOTING (P)
+          </button>
+          <div style={{
+            background: 'rgba(0,0,0,0.8)', 
+            color: 'white', 
+            padding: '10px', 
+            borderRadius: '5px'
+          }}>
+            Your Name: {username} | Role: {gameState.myRole} | Players: {allPlayers.length}
+          </div>
+        </div>
+
         {/* Top Left - Role and Game Info */}
         <div style={{
           position: 'absolute',
@@ -602,6 +680,7 @@ export default function MergedGame() {
           borderRadius: '8px',
           fontSize: '14px'
         }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>👤 {username}</div>
           <div>Role: <span style={{ 
             color: gameState.myRole === 'imposter' ? '#ff4444' : '#44ff44',
             fontWeight: 'bold'
@@ -611,13 +690,12 @@ export default function MergedGame() {
           {error && <div style={{ color: '#ff6666', fontSize: '12px', marginTop: '5px' }}>{error}</div>}
         </div>
 
-        {/* Top Center - Kill Button (for imposters only) */}
+        {/* Top Right - Kill Button (for imposters only) */}
         {gameState.myRole === 'imposter' && (
           <div style={{
             position: 'absolute',
-            top: '10px',
-            left: '50%',
-            transform: 'translateX(-50%)',
+            top: '60px',
+            right: '10px',
             zIndex: 1000
           }}>
             <button 
@@ -757,6 +835,111 @@ export default function MergedGame() {
             zIndex: 1
           }}
         ></div>
+      </div>
+    );
+  }
+
+  // Render results phase (game over)
+  if (gameState.phase === 'results') {
+    const lastMessage = messages[messages.length - 1] || "Game Over!";
+    
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        backgroundColor: 'rgba(0, 0, 0, 0.9)',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 10000,
+        fontFamily: 'Arial, sans-serif'
+      }}>
+        <div style={{
+          backgroundColor: '#2a2a2a',
+          padding: '40px',
+          borderRadius: '15px',
+          textAlign: 'center',
+          maxWidth: '500px',
+          width: '90%',
+          color: 'white',
+          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.5)'
+        }}>
+          <h1 style={{ 
+            margin: '0 0 20px 0',
+            fontSize: '2.5rem',
+            color: lastMessage.includes('Imposters win') ? '#ff4444' : '#44ff44'
+          }}>
+            🎮 Game Over!
+          </h1>
+          
+          <div style={{
+            fontSize: '1.4rem',
+            margin: '20px 0',
+            padding: '15px',
+            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+            borderRadius: '8px',
+            fontWeight: 'bold'
+          }}>
+            {lastMessage}
+          </div>
+          
+          <div style={{
+            margin: '30px 0',
+            fontSize: '1rem',
+            color: '#ccc'
+          }}>
+            All players remain in room: <strong>{gameState.roomID}</strong><br/>
+            Other players can still join for the next game!
+          </div>
+          
+          <div style={{ display: 'flex', gap: '15px', justifyContent: 'center' }}>
+            {gameState.isHost ? (
+              <button
+                onClick={handleStartNewGame}
+                style={{
+                  padding: '15px 30px',
+                  backgroundColor: '#44ff44',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '16px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
+              >
+                🚀 Start New Game
+              </button>
+            ) : (
+              <div style={{
+                padding: '15px 30px',
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                borderRadius: '8px',
+                fontSize: '14px',
+                color: '#ccc'
+              }}>
+                Waiting for host to start new game...
+              </div>
+            )}
+            
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                padding: '15px 30px',
+                backgroundColor: '#666',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '16px',
+                cursor: 'pointer'
+              }}
+            >
+              🚪 Leave Room
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

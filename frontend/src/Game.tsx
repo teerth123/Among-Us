@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 // Types matching your backend
@@ -20,7 +20,7 @@ interface GameState {
 
 const SOCKET_URL = 'http://localhost:3000';
 
-export default function Google() {
+export default function Game() {
   // Socket connection
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -45,12 +45,15 @@ export default function Google() {
   
   // Game canvas refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const gameLoopRef = useRef<number>();
+  const gameLoopRef = useRef<number>(null);
   const keysRef = useRef<Record<string, boolean>>({});
   
   // Player state
   const [myPlayer, setMyPlayer] = useState<Player | null>(null);
   const [allPlayers, setAllPlayers] = useState<Player[]>([]);
+
+  // phase ref to capture latest phase
+  const phaseRef = useRef(gameState.phase);
 
   // Initialize socket connection
   useEffect(() => {
@@ -85,6 +88,11 @@ export default function Google() {
       setAllPlayers(players);
     });
 
+    // Listen for full player list updates
+    newSocket.on('update-players', (players: Player[]) => {
+      setAllPlayers(players);
+    });
+
     newSocket.on('player-killed', (data: { killer: string; victim: string }) => {
       setMessages(prev => [...prev, `${data.victim} was killed by ${data.killer}!`]);
     });
@@ -93,10 +101,49 @@ export default function Google() {
       setPollingData(pollData);
     });
 
+    newSocket.on('player-eliminated', (username: string) => {
+      setAllPlayers(prev => prev.map(p => p.username === username ? { ...p, dead: true } : p));
+      setMessages(prev => [...prev, `${username} was eliminated by vote!`]);
+    });
+
+    newSocket.on('endGame', (msg: string) => {
+      setGameState(prev => ({ ...prev, phase: 'results' }));
+      setMessages(prev => [...prev, msg]);
+    });
+
     return () => {
       newSocket.close();
     };
   }, []);
+
+  // keep ref in sync
+  useEffect(() => {
+    phaseRef.current = gameState.phase;
+  }, [gameState.phase]);
+
+  // single keydown listener on mount
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      console.log('Key pressed:', e.code, 'Current phase:', phaseRef.current);
+      if (e.code === 'KeyP' && phaseRef.current === 'playing') {
+        console.log('Opening voting panel');
+        setGameState(prev => ({ ...prev, phase: 'voting' }));
+        setPollingData({});
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Auto-close voting after 30 seconds
+  useEffect(() => {
+    if (gameState.phase === 'voting') {
+      const timer = setTimeout(() => {
+        handleDoneVoting();
+      }, 30000);
+      return () => clearTimeout(timer);
+    }
+  }, [gameState.phase]);
 
   // Handle username change
   const handleSetUsername = () => {
@@ -161,6 +208,21 @@ export default function Google() {
     socket.emit('polling', { username: targetUsername });
   };
 
+  // Call meeting (start voting phase)
+  const handleCallMeeting = () => {
+    if (!socket) return;
+    setGameState(prev => ({ ...prev, phase: 'voting' }));
+    setPollingData({});
+  };
+
+  // Done voting
+  const handleDoneVoting = () => {
+    if (!socket) return;
+    socket.emit('donePolling');
+    setGameState(prev => ({ ...prev, phase: 'playing' }));
+    setPollingData({});
+  };
+
   // Game canvas and movement
   useEffect(() => {
     if (gameState.phase !== 'playing') return;
@@ -183,17 +245,23 @@ export default function Google() {
       setMyPlayer(newPlayer);
     }
 
-    // Keyboard event handlers
-    const handleKeyDown = (e: KeyboardEvent) => {
-      keysRef.current[e.code] = true;
+    // Only movement keys - NO global keydown listener here
+    const handleMovementKeyDown = (e: KeyboardEvent) => {
+      // Only handle movement keys, not P
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        keysRef.current[e.code] = true;
+      }
     };
 
-    const handleKeyUp = (e: KeyboardEvent) => {
-      keysRef.current[e.code] = false;
+    const handleMovementKeyUp = (e: KeyboardEvent) => {
+      // Only handle movement keys, not P
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        keysRef.current[e.code] = false;
+      }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('keydown', handleMovementKeyDown);
+    window.addEventListener('keyup', handleMovementKeyUp);
 
     // Game loop
     const gameLoop = () => {
@@ -282,319 +350,421 @@ export default function Google() {
       if (gameLoopRef.current) {
         cancelAnimationFrame(gameLoopRef.current);
       }
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', handleMovementKeyDown);
+      window.removeEventListener('keyup', handleMovementKeyUp);
     };
   }, [gameState.phase, myPlayer, allPlayers, socket, username, gameState.myRole]);
 
-  // Render lobby phase
-  if (gameState.phase === 'lobby') {
-    return (
-      <div className="game-container">
-        <div className="lobby">
-          <h1>Multiplayer Game</h1>
-          <div className="connection-status">
-            Status: {connected ? '🟢 Connected' : '🔴 Disconnected'}
-          </div>
-          
-          {error && <div className="error">{error}</div>}
-          
-          <div className="form-group">
-            <input
-              type="text"
-              placeholder="Enter username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-            <button onClick={handleSetUsername}>Set Username</button>
-          </div>
+  return (
+    <>
+      {/* ALWAYS VISIBLE DEBUG BUTTON - SHOWS IN ALL PHASES */}
 
-          <div className="room-actions">
-            <button onClick={() => setShowCreateRoom(!showCreateRoom)}>
-              {showCreateRoom ? 'Cancel' : 'Create Room'}
-            </button>
-            
-            {!showCreateRoom && (
-              <div className="form-group">
-                <input
-                  type="text"
-                  placeholder="Room ID"
-                  value={roomInput}
-                  onChange={(e) => setRoomInput(e.target.value)}
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                />
-                <button onClick={handleJoinRoom}>Join Room</button>
-              </div>
-            )}
-
-            {showCreateRoom && (
-              <div className="form-group">
-                <input
-                  type="text"
-                  placeholder="Room ID"
-                  value={roomInput}
-                  onChange={(e) => setRoomInput(e.target.value)}
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                />
-                <button onClick={handleCreateRoom}>Create Room</button>
-              </div>
-            )}
-          </div>
+      <h1>Hi</h1>
+      <div style={{position: 'fixed', top: '10px', left: '10px', zIndex: 9999, display: 'flex', gap: '10px'}}>
+        <button onClick={handleCallMeeting} style={{background: 'red', padding: '15px 30px', border: 'none', borderRadius: '5px', color: 'white', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold'}}>
+          🗳️ VOTE BUTTON (Phase: {gameState.phase})
+        </button>
+        <div style={{background: 'rgba(0,0,0,0.8)', color: 'white', padding: '10px', borderRadius: '5px'}}>
+          Role: {gameState.myRole} | Players: {allPlayers.length} | Connected: {connected ? 'YES' : 'NO'}
         </div>
       </div>
-    );
-  }
 
-  // Render waiting room
-  if (gameState.phase === 'waiting') {
-    return (
-      <div className="game-container">
-        <div className="waiting-room">
-          <h2>Room: {gameState.roomID}</h2>
-          <div className="players-list">
-            <h3>Players in room:</h3>
-            {messages.map((msg, index) => (
-              <div key={index}>{msg}</div>
-            ))}
-          </div>
-          
-          {gameState.isHost && (
-            <button onClick={handleStartGame} className="start-game-btn">
-              Start Game (Need 4+ players)
-            </button>
-          )}
-          
-          {error && <div className="error">{error}</div>}
-        </div>
-      </div>
-    );
-  }
-
-  // Render game phase
-  if (gameState.phase === 'playing') {
-    return (
-      <div className="game-container">
-        <div className="game-ui">
-          <div className="game-info">
-            <div>Role: <span className={`role-${gameState.myRole}`}>{gameState.myRole}</span></div>
-            <div>Room: {gameState.roomID}</div>
-            <div>Players: {allPlayers.filter(p => !p.dead).length} alive</div>
-          </div>
-
-          <div className="game-actions">
-            {gameState.myRole === 'imposter' && (
-              <button onClick={handleKill} className="kill-btn">Kill</button>
-            )}
-          </div>
-
-          <canvas
-            ref={canvasRef}
-            width={800}
-            height={600}
-            className="game-canvas"
-          />
-
-          <div className="controls">
-            <p>Use WASD or Arrow Keys to move</p>
-            {gameState.myRole === 'imposter' && (
-              <p>You are an IMPOSTER! Kill other players and blend in.</p>
-            )}
-          </div>
-
-          {Object.keys(pollingData).length > 0 && (
-            <div className="voting-panel">
-              <h3>Voting Results:</h3>
-              {Object.entries(pollingData).map(([player, votes]) => (
-                <div key={player} className="vote-item">
-                  {player}: {votes} votes
-                  <button onClick={() => handleVote(player)}>Vote</button>
-                </div>
-              ))}
+      {/* Original phase-specific content */}
+      {gameState.phase === 'lobby' && (
+        <div className="game-container">
+          <div className="lobby">
+            <h1>Multiplayer Game</h1>
+            <div className="connection-status">
+              Status: {connected ? '🟢 Connected' : '🔴 Disconnected'}
             </div>
-          )}
+            
+            {error && <div className="error">{error}</div>}
+            
+            <div className="form-group">
+              <input
+                type="text"
+                placeholder="Enter username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+              <button onClick={handleSetUsername}>Set Username</button>
+            </div>
 
-          <div className="messages">
-            <h4>Game Messages:</h4>
-            <div className="message-list">
-              {messages.slice(-5).map((msg, index) => (
+            <div className="room-actions">
+              <button onClick={() => setShowCreateRoom(!showCreateRoom)}>
+                {showCreateRoom ? 'Cancel' : 'Create Room'}
+              </button>
+              
+              {!showCreateRoom && (
+                <div className="form-group">
+                  <input
+                    type="text"
+                    placeholder="Room ID"
+                    value={roomInput}
+                    onChange={(e) => setRoomInput(e.target.value)}
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                  />
+                  <button onClick={handleJoinRoom}>Join Room</button>
+                </div>
+              )}
+
+              {showCreateRoom && (
+                <div className="form-group">
+                  <input
+                    type="text"
+                    placeholder="Room ID"
+                    value={roomInput}
+                    onChange={(e) => setRoomInput(e.target.value)}
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                  />
+                  <button onClick={handleCreateRoom}>Create Room</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {gameState.phase === 'waiting' && (
+        <div className="game-container">
+          <div className="waiting-room">
+            <h2>Room: {gameState.roomID}</h2>
+            <div className="players-list">
+              <h3>Players in room:</h3>
+              {messages.map((msg, index) => (
                 <div key={index}>{msg}</div>
               ))}
             </div>
+            
+            {gameState.isHost && (
+              <button onClick={handleStartGame} className="start-game-btn">
+                Start Game (Need 4+ players)
+              </button>
+            )}
+            
+            {error && <div className="error">{error}</div>}
           </div>
         </div>
+      )}
 
-        <style jsx>{`
-          .game-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 20px;
-            font-family: Arial, sans-serif;
-            background: #1a1a1a;
-            color: white;
-            min-height: 100vh;
-          }
+      {(gameState.phase === 'playing' || gameState.phase === 'voting') && (
+        <div className="game-container">
+          <div className="game-ui">
+            <div className="game-info">
+              <div>Role: <span className={`role-${gameState.myRole}`}>{gameState.myRole}</span></div>
+              <div>Room: {gameState.roomID}</div>
+              <div>Players: {allPlayers.filter(p => !p.dead).length} alive</div>
+            </div>
 
-          .lobby, .waiting-room {
-            background: #2a2a2a;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            max-width: 500px;
-            width: 100%;
-          }
+            <div className="game-actions">
+              {gameState.myRole === 'imposter' && (
+                <button onClick={handleKill} className="kill-btn">Kill</button>
+              )}
+            </div>
 
-          .form-group {
-            display: flex;
-            gap: 10px;
-            margin: 15px 0;
-            flex-wrap: wrap;
-          }
+            <canvas
+              ref={canvasRef}
+              width={800}
+              height={600}
+              className="game-canvas"
+            />
 
-          .form-group input {
-            flex: 1;
-            padding: 10px;
-            border: none;
-            border-radius: 5px;
-            background: #3a3a3a;
-            color: white;
-          }
+            <div className="controls">
+              <p>Use WASD or Arrow Keys to move</p>
+              {gameState.myRole === 'imposter' && (
+                <p>You are an IMPOSTER! Kill other players and blend in.</p>
+              )}
+            </div>
 
-          .form-group button, .start-game-btn, .kill-btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            background: #4CAF50;
-            color: white;
-            cursor: pointer;
-            transition: background 0.3s;
-          }
+            <div className="messages">
+              <h4>Game Messages:</h4>
+              <div className="message-list">
+                {messages.slice(-5).map((msg, index) => (
+                  <div key={index}>{msg}</div>
+                ))}
+              </div>
+            </div>
+          </div>
 
-          .form-group button:hover, .start-game-btn:hover {
-            background: #45a049;
-          }
+          {/* Voting overlay */}
+          {gameState.phase === 'voting' && (
+            <div className="overlay">
+              <div className="voting-panel">
+                <h3>Vote for player to eliminate:</h3>
+                {allPlayers.filter(p => !p.dead && p.username !== username).map(p => (
+                  <button key={p.username} onClick={() => handleVote(p.username)} disabled={!!pollingData[p.username]}>
+                    {p.username} ({pollingData[p.username] || 0})
+                  </button>
+                ))}
+                <button onClick={handleDoneVoting} className="done-vote-btn">Done Voting</button>
+              </div>
+            </div>
+          )}
 
-          .kill-btn {
-            background: #f44336;
-          }
+          <style>{`
+            .game-container {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              padding: 20px;
+              font-family: Arial, sans-serif;
+              background: #1a1a1a;
+              color: white;
+              min-height: 100vh;
+            }
 
-          .kill-btn:hover {
-            background: #da190b;
-          }
+            .lobby, .waiting-room {
+              background: #2a2a2a;
+              padding: 30px;
+              border-radius: 10px;
+              box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+              max-width: 500px;
+              width: 100%;
+            }
 
-          .connection-status {
-            margin: 10px 0;
-            font-size: 14px;
-          }
+            .form-group {
+              display: flex;
+              gap: 10px;
+              margin: 15px 0;
+              flex-wrap: wrap;
+            }
 
-          .error {
-            background: #f44336;
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-          }
+            .form-group input {
+              flex: 1;
+              padding: 10px;
+              border: none;
+              border-radius: 5px;
+              background: #3a3a3a;
+              color: white;
+            }
 
-          .game-ui {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 20px;
-          }
+            .form-group button, .start-game-btn, .kill-btn, .vote-btn {
+              padding: 10px 20px;
+              border: none;
+              border-radius: 5px;
+              background: #4CAF50;
+              color: white;
+              cursor: pointer;
+              transition: background 0.3s;
+            }
 
-          .game-info {
-            display: flex;
-            gap: 20px;
-            background: #2a2a2a;
-            padding: 10px 20px;
-            border-radius: 5px;
-          }
+            .form-group button:hover, .start-game-btn:hover, .vote-btn:hover {
+              background: #45a049;
+            }
 
-          .role-imposter {
-            color: #ff4444;
-            font-weight: bold;
-          }
+            .kill-btn {
+              background: #f44336;
+            }
 
-          .game-canvas {
-            border: 2px solid #444;
-            border-radius: 5px;
-          }
+            .kill-btn:hover {
+              background: #da190b;
+            }
 
-          .controls {
-            text-align: center;
-            background: #2a2a2a;
-            padding: 10px;
-            border-radius: 5px;
-          }
+            .connection-status {
+              margin: 10px 0;
+              font-size: 14px;
+            }
 
-          .voting-panel {
-            background: #2a2a2a;
-            padding: 15px;
-            border-radius: 5px;
-            min-width: 300px;
-          }
+            .error {
+              background: #f44336;
+              color: white;
+              padding: 10px;
+              border-radius: 5px;
+              margin: 10px 0;
+            }
 
-          .vote-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin: 5px 0;
-            padding: 5px;
-            background: #3a3a3a;
-            border-radius: 3px;
-          }
+            .game-ui {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 20px;
+            }
 
-          .vote-item button {
-            padding: 5px 10px;
-            border: none;
-            border-radius: 3px;
-            background: #666;
-            color: white;
-            cursor: pointer;
-          }
+            .game-info {
+              display: flex;
+              gap: 20px;
+              background: #2a2a2a;
+              padding: 10px 20px;
+              border-radius: 5px;
+            }
 
-          .vote-item button:hover {
-            background: #777;
-          }
+            .role-imposter {
+              color: #ff4444;
+              font-weight: bold;
+            }
 
-          .messages {
-            background: #2a2a2a;
-            padding: 15px;
-            border-radius: 5px;
-            width: 100%;
-            max-width: 800px;
-          }
+            .game-canvas {
+              border: 2px solid #444;
+              border-radius: 5px;
+            }
 
-          .message-list {
-            max-height: 100px;
-            overflow-y: auto;
-            font-size: 14px;
-          }
+            .controls {
+              text-align: center;
+              background: #2a2a2a;
+              padding: 10px;
+              border-radius: 5px;
+            }
 
-          .message-list div {
-            margin: 2px 0;
-            padding: 2px 0;
-            border-bottom: 1px solid #444;
-          }
+            .voting-panel {
+              background: #2a2a2a;
+              padding: 15px;
+              border-radius: 5px;
+              min-width: 300px;
+            }
 
-          h1, h2, h3, h4 {
-            text-align: center;
-            margin-bottom: 20px;
-          }
-        `}</style>
-      </div>
-    );
-  }
+            .vote-item {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin: 5px 0;
+              padding: 5px;
+              background: #3a3a3a;
+              border-radius: 3px;
+            }
 
-  return null;
+            .vote-item button {
+              padding: 5px 10px;
+              border: none;
+              border-radius: 3px;
+              background: #666;
+              color: white;
+              cursor: pointer;
+            }
+
+            .vote-item button:hover {
+              background: #777;
+            }
+
+            .messages {
+              background: #2a2a2a;
+              padding: 15px;
+              border-radius: 5px;
+              width: 100%;
+              max-width: 800px;
+            }
+
+            .message-list {
+              max-height: 100px;
+              overflow-y: auto;
+              font-size: 14px;
+            }
+
+            .message-list div {
+              margin: 2px 0;
+              padding: 2px 0;
+              border-bottom: 1px solid #444;
+            }
+
+            h1, h2, h3, h4 {
+              text-align: center;
+              margin-bottom: 20px;
+            }
+
+            .modal {
+              background: rgba(0, 0, 0, 0.8);
+              color: white;
+              padding: 30px;
+              border-radius: 10px;
+              max-width: 500px;
+              width: 100%;
+              position: fixed;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              z-index: 1000;
+            }
+
+            .modal h2 {
+              margin-top: 0;
+            }
+
+            .done-vote-btn {
+              background: #007bff;
+            }
+
+            .done-vote-btn:hover {
+              background: #0056b3;
+            }
+
+            .overlay {
+              position: fixed;
+              top: 0;
+              left: 0;
+              width: 100%;
+              height: 100%;
+              background: rgba(0,0,0,0.8);
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              z-index: 1000;
+            }
+
+            .voting-dialog {
+              background: #2a2a2a;
+              padding: 20px;
+              border-radius: 10px;
+              border: none;
+              max-width: 400px;
+              width: 100%;
+              color: white;
+              position: relative;
+            }
+
+            .voting-dialog h3 {
+              margin-top: 0;
+              margin-bottom: 15px;
+              text-align: center;
+            }
+
+            .voting-dialog button {
+              padding: 10px;
+              border: none;
+              border-radius: 5px;
+              background: #4CAF50;
+              color: white;
+              cursor: pointer;
+              width: 100%;
+              margin: 5px 0;
+              transition: background 0.3s;
+            }
+
+            .voting-dialog button:hover {
+              background: #45a049;
+            }
+
+            .voting-dialog .close {
+              position: absolute;
+              top: 10px;
+              right: 10px;
+              background: transparent;
+              border: none;
+              color: white;
+              font-size: 16px;
+              cursor: pointer;
+            }
+          `}</style>
+        </div>
+      )}
+
+      {gameState.phase === 'results' && (
+        <div className="game-container">
+          <div className="modal">
+            <h2>Game Over</h2>
+            {messages.slice(-1).map((msg, i) => <p key={i}>{msg}</p>)}
+            <button onClick={() => window.location.reload()}>Play Again</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }

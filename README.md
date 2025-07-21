@@ -2,9 +2,21 @@
 
 A real-time multiplayer web-based game inspired by Among Us, built with modern technologies including React, TypeScript, Node.js, and Phaser.js.
 
-## 🎮 Demo
+## 🎮 Demo & Gameplay
 
+### 🎥 Live Demo
 Check out the game in action: **[Demo Video](https://x.com/DexTee_17/status/1939689150657249393)**
+
+### 📹 Gameplay Video
+
+https://github.com/teerth123/Among-Us/assets/YOUR_USER_ID/demo.mp4
+
+*OR using HTML5 video player:*
+
+<video width="100%" controls>
+  <source src="https://github.com/teerth123/Among-Us/raw/main/demo/demo.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
 
 ## 🚀 Features
 
@@ -36,6 +48,8 @@ Check out the game in action: **[Demo Video](https://x.com/DexTee_17/status/1939
 
 ```
 Among-Us/
+├── demo/                  # Demo videos and assets
+│   └── demo.mp4          # Gameplay demonstration
 ├── frontend/              # React + Vite client
 │   ├── src/
 │   │   ├── Google.tsx     # Main game component with Phaser
@@ -159,8 +173,8 @@ This project is open source. Feel free to use, modify, and distribute.
 - [ ] Implement sabotage mechanics
 - [ ] Add proper maps and environments
 - [ ] Emergency meeting functionality
-- [ ] EnUX
-- [ ] Mobilhanced UI/e touch controls
+- [ ] Enhanced UI/UX
+- [ ] Mobile touch controls
 - [ ] Spectator mode for eliminated players
 
 ---

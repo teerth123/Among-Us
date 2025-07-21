@@ -8,10 +8,8 @@ A real-time multiplayer web-based game inspired by Among Us, built with modern t
 Check out the game in action: **[Demo Video](https://x.com/DexTee_17/status/1939689150657249393)**
 
 ### 📹 Gameplay Video
+https://github.com/teerth123/Among-Us/raw/main/demo/demo.mp4" type="video/mp4
 
-https://github.com/teerth123/Among-Us/assets/YOUR_USER_ID/demo.mp4
-
-*OR using HTML5 video player:*
 
 <video width="100%" controls>
   <source src="https://github.com/teerth123/Among-Us/raw/main/demo/demo.mp4" type="video/mp4">
